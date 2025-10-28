@@ -67,18 +67,8 @@ def run_pca_and_ward(num_df: pd.DataFrame):
 # App UI
 # ----------------------
 st.set_page_config(page_title="Player Clusters — PCA + Ward (15)", layout="wide")
-st.title("⚽ Player Clusters — PCA + Ward (Interactive, 15 Clusters)")
+st.title("Player Role Clusters")
 
-with st.sidebar:
-    uploaded = st.file_uploader("Upload CSV (optional)", type=["csv"]) 
-    if uploaded is not None:
-        df = pd.read_csv(uploaded)
-    else:
-        df = load_csv()
-
-if df.empty:
-    st.warning("No data loaded. Upload a CSV or place Cleaned_Football_Player_Data.csv next to this app.")
-    st.stop()
 
 # Preprocess
 drop_cols = ["Player ID", "Player Name", "Player Team", "Player Age", "Player Height", "Mins Played", "rating"]
@@ -190,10 +180,3 @@ st.download_button(
     file_name="players_pca_ward_clusters.csv",
     mime="text/csv"
 )
-
-# Footer note
-st.markdown("""
----
-**Notes**
-- Export includes original identifier/context fields (Player ID, Age, Height, Minutes, rating) plus new Cluster Group and Player Type, followed by performance metrics. PC coordinates and raw cluster id are omitted.
-""")
