@@ -4,8 +4,9 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import AgglomerativeClustering
-import plotly.graph_objects as go
 import plotly.express as px
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 # ============================================================
 # CONFIGURATION
@@ -18,13 +19,12 @@ st.set_page_config(
 
 st.title("⚽ Soccer Player Clustering Dashboard")
 st.markdown("""
-This dashboard analyzes player performance data from a fixed dataset and groups players into **10 distinct clusters** 
-using Ward's hierarchical clustering.  
-Clusters represent player archetypes derived from statistical performance, visualized through PCA and radar charts.
+This dashboard groups players into **10 archetypes** based on performance metrics.  
+Each archetype represents a different style of player contribution across the pitch.
 """)
 
 # ============================================================
-# LOAD FIXED DATASET
+# LOAD DATA
 # ============================================================
 @st.cache_data
 def load_data():
@@ -32,18 +32,20 @@ def load_data():
     return df
 
 df = load_data()
-st.success(f"✅ Dataset loaded: {df.shape[0]} players, {df.shape[1]} columns")
+st.success(f"✅ Dataset loaded successfully: {df.shape[0]} players, {df.shape[1]} columns")
 
 # ============================================================
-# FEATURE SELECTION (EXCLUDE NON-PERFORMANCE COLUMNS)
+# FEATURE SELECTION
 # ============================================================
-exclude_cols = [
-    'rating', 'Player Name', 'Player Team', 'Mins Played', 
-    'Height', 'Weight', 'Player ID', 'Player Age'
+numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+exclude_keywords = ['rating', 'name', 'team', 'min', 'height', 'weight', 'id', 'age']
+feature_cols = [
+    c for c in numeric_cols
+    if not any(keyword.lower() in c.lower() for keyword in exclude_keywords)
 ]
 
-numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-feature_cols = [c for c in numeric_cols if c not in exclude_cols]
+# Try to detect position columns for export reordering later
+pos_cols = [c for c in df.columns if "position" in c.lower()]
 
 # ============================================================
 # STANDARDIZE + PCA
@@ -56,7 +58,7 @@ pca = PCA(n_components=2)
 X_pca = pca.fit_transform(X_scaled)
 
 # ============================================================
-# CLUSTERING (FIXED TO 10)
+# CLUSTERING (10 FIXED)
 # ============================================================
 n_clusters = 10
 model = AgglomerativeClustering(n_clusters=n_clusters, linkage='ward')
@@ -68,114 +70,121 @@ df_clusters['PC1'] = X_pca[:, 0]
 df_clusters['PC2'] = X_pca[:, 1]
 
 # ============================================================
-# CLUSTER SUMMARIES
+# CLUSTER NAMES (YOUR UPDATED LIST)
+# ============================================================
+cluster_names = {
+    0: "All-Around Goal Generator",
+    1: "Roaming Defender",
+    2: "Primary Goal Scorer",
+    3: "Wide Playmaker",
+    4: "Utility Man",
+    5: "Ball-Winning Distributer",
+    6: "Dribbling Winger",
+    7: "Goal Keeper",
+    8: "Secondary Goal Scorer",
+    9: "Holding Defender"
+}
+
+df_clusters['Cluster Name'] = df_clusters['Cluster'].map(cluster_names)
+
+# ============================================================
+# CLUSTER SUMMARY STATS
 # ============================================================
 cluster_means = df_clusters.groupby("Cluster")[feature_cols].mean()
 overall_means = df_clusters[feature_cols].mean()
-cluster_diff = cluster_means - overall_means
-
-top_features = {}
-for cluster_id in cluster_diff.index:
-    top = cluster_diff.loc[cluster_id].abs().sort_values(ascending=False).head(5)
-    top_features[cluster_id] = top.index.tolist()
+feature_std = df_clusters[feature_cols].std()
+z_diff = (cluster_means - overall_means) / feature_std
 
 # ============================================================
-# PCA SCATTER PLOT
+# PCA CLUSTER VISUALIZATION
 # ============================================================
 st.header("📊 PCA 2D Cluster Visualization")
 
+cluster_select = st.multiselect(
+    "Select clusters to display:",
+    options=["All"] + [f"{i} – {cluster_names[i]}" for i in sorted(df_clusters['Cluster'].unique())],
+    default=["All"]
+)
+
+# Determine which clusters to display
+if "All" in cluster_select or len(cluster_select) == 0:
+    filtered_df = df_clusters.copy()
+else:
+    selected_numbers = [int(c.split("–")[0].strip()) for c in cluster_select]
+    filtered_df = df_clusters[df_clusters['Cluster'].isin(selected_numbers)]
+
+# Create combined cluster label for legend
+df_clusters['Cluster Label'] = df_clusters['Cluster'].astype(str) + " – " + df_clusters['Cluster Name']
+
 fig_scatter = px.scatter(
-    df_clusters,
+    filtered_df,
     x="PC1",
     y="PC2",
-    color=df_clusters["Cluster"].astype(str),
-    hover_data=["Player Name"],
-    title="PCA Projection of Player Clusters (10 Total)",
+    color=df_clusters.loc[filtered_df.index, "Cluster Label"],
+    hover_data=["Player Name"] if "Player Name" in df_clusters.columns else None,
+    title="PCA Projection of Player Archetypes (10 Clusters)",
     color_discrete_sequence=px.colors.qualitative.Set3
 )
 fig_scatter.update_layout(
-    legend_title_text="Cluster ID",
+    legend_title_text="Cluster (Number – Archetype)",
     height=700,
-    xaxis_title="Principal Component 1 (Attacking tendency)",
-    yaxis_title="Principal Component 2 (Defensive tendency)"
+    xaxis_title="Principal Component 1 (Attacking Tendency)",
+    yaxis_title="Principal Component 2 (Defensive Tendency)"
 )
 st.plotly_chart(fig_scatter, use_container_width=True)
 
 # ============================================================
-# CLUSTER DETAILS
+# FEATURE DIFFERENCE BAR CHART
 # ============================================================
-st.header("🔍 Cluster Insights")
+st.markdown("---")
+st.header("📊 Cluster-Specific Feature Differences")
 
-selected_cluster = st.selectbox("Select a Cluster to Explore:", sorted(df_clusters["Cluster"].unique()))
-st.subheader(f"Cluster {selected_cluster} Summary")
-
-# Show top defining factors
-st.write("**Top 5 Defining Features (most different from overall average):**")
-top_df = pd.DataFrame({
-    "Feature": top_features[selected_cluster],
-    "Cluster Mean": cluster_means.loc[selected_cluster, top_features[selected_cluster]].values,
-    "Dataset Mean": overall_means[top_features[selected_cluster]].values
-})
-top_df["Difference"] = top_df["Cluster Mean"] - top_df["Dataset Mean"]
-st.dataframe(top_df.style.format({"Cluster Mean": "{:.3f}", "Dataset Mean": "{:.3f}", "Difference": "{:+.3f}"}))
-
-# ============================================================
-# RADAR CHART (WITH CLEAR LEGEND)
-# ============================================================
-st.subheader(f"📈 Radar Chart Comparison – Cluster {selected_cluster}")
-
-cluster_avg = cluster_means.loc[selected_cluster]
-overall_avg = overall_means[cluster_avg.index]
-
-fig = go.Figure()
-
-fig.add_trace(go.Scatterpolar(
-    r=cluster_avg.values,
-    theta=cluster_avg.index,
-    fill='toself',
-    name=f'Cluster {selected_cluster} Average',
-    line=dict(color='royalblue', width=3)
-))
-
-fig.add_trace(go.Scatterpolar(
-    r=overall_avg.values,
-    theta=overall_avg.index,
-    fill='toself',
-    name='Overall Dataset Average',
-    line=dict(color='orange', width=2, dash='dash')
-))
-
-fig.update_layout(
-    title=f"Cluster {selected_cluster} vs. Dataset Average",
-    polar=dict(
-        radialaxis=dict(visible=True, showline=True, linewidth=1, gridcolor='lightgrey')
-    ),
-    showlegend=True,
-    legend=dict(
-        title="Legend",
-        orientation="h",
-        yanchor="bottom",
-        y=-0.3,
-        xanchor="center",
-        x=0.5,
-        bgcolor='rgba(255,255,255,0.7)',
-        bordercolor="black",
-        borderwidth=1
-    ),
-    height=750
+selected_cluster = st.selectbox(
+    "Select a Cluster to Explore:",
+    sorted(df_clusters["Cluster"].unique()),
+    format_func=lambda x: f"{x} – {cluster_names[x]}"
 )
-st.plotly_chart(fig, use_container_width=True)
+
+selected_z = z_diff.loc[selected_cluster].sort_values(ascending=False)
+fig2, ax2 = plt.subplots(figsize=(12, 6))
+colors = ['green' if v > 0 else 'red' for v in selected_z]
+ax2.barh(selected_z.index, selected_z.values, color=colors)
+ax2.axvline(0, color='black', linewidth=1)
+ax2.set_xlabel("Z-score Difference from Dataset Mean")
+ax2.set_title(f"{selected_cluster} – {cluster_names[selected_cluster]}: Feature Deviations")
+plt.gca().invert_yaxis()
+st.pyplot(fig2)
+
+st.markdown("""
+**Interpretation Tip:**  
+Green = above-average values for this archetype; Red = below-average values.  
+The longer the bar, the more defining that feature is for the cluster.
+""")
 
 # ============================================================
-# DOWNLOAD OUTPUT
+# EXPORT CLUSTERED DATASET (FINALIZED)
 # ============================================================
 st.markdown("---")
 st.subheader("📁 Export Clustered Dataset")
 
-output_csv = df_clusters.to_csv(index=False).encode('utf-8')
+# Build export dataframe (remove unwanted columns)
+export_df = df_clusters.drop(columns=["PC1", "PC2", "Cluster", "Cluster Label"], errors="ignore")
+
+# Reorder columns to place Cluster Name right after position columns
+cols = list(export_df.columns)
+if pos_cols:
+    insert_at = max(cols.index(pos_cols[-1]) + 1, 1)
+    reordered_cols = cols[:insert_at] + ['Cluster Name'] + [c for c in cols if c not in pos_cols + ['Cluster Name']]
+else:
+    reordered_cols = ['Cluster Name'] + [c for c in cols if c != 'Cluster Name']
+
+export_df = export_df[reordered_cols]
+
+# Download button
+output_csv = export_df.to_csv(index=False).encode('utf-8')
 st.download_button(
     label="Download Clustered Data (CSV)",
     data=output_csv,
-    file_name="clustered_players_fixed.csv",
+    file_name="clustered_players_named.csv",
     mime="text/csv"
 )
