@@ -5,9 +5,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import AgglomerativeClustering
 import plotly.graph_objects as go
+import plotly.express as px
 
 # ============================================================
-# CONFIGURATION
+# PAGE SETUP
 # ============================================================
 st.set_page_config(
     page_title="Soccer Player Clustering App",
@@ -15,151 +16,145 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Player Clustering & Role Profiling App")
+st.title("⚽ Player Clustering & Role Profiling App")
 st.markdown("""
-This app groups players into 10 performance-based clusters using hierarchical clustering (Ward's method).
-Each cluster represents a distinct player archetype based on statistical profiles.  
-Use the panels below to explore cluster-defining features and radar charts comparing each cluster’s average
-values to the dataset mean.
+This app analyzes a fixed soccer player dataset using hierarchical clustering (Ward’s method).  
+Players are grouped into **10 clusters**, visualized on a **2D PCA plot** and compared using radar charts and statistical summaries.
 """)
 
 # ============================================================
-# DATA UPLOAD
+# LOAD DATA (fixed file)
 # ============================================================
-uploaded_file = st.file_uploader("Upload your cleaned player dataset (.csv or .xlsx)", type=["csv", "xlsx"])
+DATA_PATH = "Cleaned_Football_Player_Data.csv"
 
-if uploaded_file:
-    # Load data
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
+try:
+    df = pd.read_csv(DATA_PATH)
+    st.success(f"✅ Loaded dataset: {DATA_PATH} ({df.shape[0]} players, {df.shape[1]} columns)")
+except FileNotFoundError:
+    st.error("❌ Dataset not found. Make sure 'Cleaned_Football_Player_Data.csv' is in the same folder as this script.")
+    st.stop()
 
-    st.success(f"✅ Data loaded successfully! ({df.shape[0]} players, {df.shape[1]} columns)")
+# ============================================================
+# FEATURE SELECTION
+# ============================================================
+exclude_cols = [
+    'Player ID', 'Player Name', 'Player Team', 'Mins Played', 
+    'Player Height', 'Player Weight', 'rating'
+]
+feature_cols = [col for col in df.select_dtypes(include=[np.number]).columns if col not in exclude_cols]
 
-    # ============================================================
-    # SELECT FEATURES
-    # ============================================================
-    # Automatically detect numeric columns
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+X = df[feature_cols].dropna()
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
 
-    # Exclude ID/demographic columns if present
-    exclude_cols = ['Player ID', 'Player Name', 'Player Team', 'Position 1', 'Position 2']
-    feature_cols = [col for col in numeric_cols if col not in exclude_cols]
+# ============================================================
+# PCA REDUCTION
+# ============================================================
+pca = PCA(n_components=2)
+X_pca = pca.fit_transform(X_scaled)
+df_pca = pd.DataFrame(X_pca, columns=['PC1', 'PC2'])
+df_pca.index = X.index
 
-    st.sidebar.header("Feature Selection")
-    selected_features = st.sidebar.multiselect(
-        "Select features for clustering:",
-        feature_cols,
-        default=feature_cols
+# ============================================================
+# CLUSTERING (fixed 10)
+# ============================================================
+n_clusters = 10
+cluster_model = AgglomerativeClustering(n_clusters=n_clusters, linkage='ward')
+clusters = cluster_model.fit_predict(X_scaled)
+
+df_clusters = df.loc[X.index].copy()
+df_clusters['Cluster'] = clusters
+df_clusters['PC1'] = df_pca['PC1']
+df_clusters['PC2'] = df_pca['PC2']
+
+# ============================================================
+# CLUSTER SUMMARIES
+# ============================================================
+cluster_means = df_clusters.groupby("Cluster")[feature_cols].mean()
+overall_means = df_clusters[feature_cols].mean()
+cluster_diff = cluster_means - overall_means
+
+# Identify top 5 defining features for each cluster
+top_features = {}
+for cluster_id in cluster_diff.index:
+    top = cluster_diff.loc[cluster_id].abs().sort_values(ascending=False).head(5)
+    top_features[cluster_id] = top.index.tolist()
+
+# ============================================================
+# 2D PCA SCATTERPLOT
+# ============================================================
+st.header("📊 Player Clusters (2D PCA Projection)")
+fig_scatter = px.scatter(
+    df_clusters,
+    x="PC1",
+    y="PC2",
+    color=df_clusters["Cluster"].astype(str),
+    hover_data=["Player Name", "Player Team"] if "Player Name" in df_clusters.columns else None,
+    title="Players grouped into 10 clusters based on statistical similarity",
+    width=900,
+    height=600
+)
+st.plotly_chart(fig_scatter, use_container_width=True)
+
+# ============================================================
+# CLUSTER DETAIL VIEW
+# ============================================================
+st.header("🔍 Cluster Exploration")
+
+selected_cluster = st.selectbox("Select a cluster to view details:", df_clusters["Cluster"].unique())
+
+col1, col2 = st.columns(2)
+
+# ------------------ TOP 5 FACTORS ------------------
+with col1:
+    st.subheader(f"Top 5 Defining Factors — Cluster {selected_cluster}")
+    top_df = pd.DataFrame({
+        "Feature": top_features[selected_cluster],
+        "Cluster Mean": cluster_means.loc[selected_cluster, top_features[selected_cluster]].values,
+        "Overall Mean": overall_means[top_features[selected_cluster]].values
+    })
+    top_df["Difference"] = top_df["Cluster Mean"] - top_df["Overall Mean"]
+    st.dataframe(top_df.style.format({"Cluster Mean": "{:.3f}", "Overall Mean": "{:.3f}", "Difference": "{:+.3f}"}))
+
+# ------------------ RADAR CHART ------------------
+with col2:
+    st.subheader(f"Radar Chart — Cluster {selected_cluster} vs Dataset Average")
+
+    cluster_avg = cluster_means.loc[selected_cluster]
+    overall_avg = overall_means[cluster_avg.index]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=cluster_avg.values,
+        theta=cluster_avg.index,
+        fill='toself',
+        name=f'Cluster {selected_cluster}',
+        line=dict(color='royalblue')
+    ))
+    fig.add_trace(go.Scatterpolar(
+        r=overall_avg.values,
+        theta=overall_avg.index,
+        fill='toself',
+        name='Dataset Average',
+        line=dict(color='orange', dash='dash')
+    ))
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, showline=True, linewidth=0.5)),
+        showlegend=True,
+        title=f"Cluster {selected_cluster} Profile vs Dataset Average",
+        height=600
     )
+    st.plotly_chart(fig, use_container_width=True)
 
-    # ============================================================
-    # STANDARDIZE + PCA
-    # ============================================================
-    X = df[selected_features].dropna()
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+# ============================================================
+# DOWNLOAD SECTION
+# ============================================================
+st.markdown("---")
+st.subheader("📁 Export Clustered Dataset")
 
-    pca = PCA(n_components=2)
-    X_pca = pca.fit_transform(X_scaled)
-
-    # ============================================================
-    # CLUSTERING
-    # ============================================================
-    n_clusters = 10
-    cluster_model = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward")
-    clusters = cluster_model.fit_predict(X_scaled)
-
-    df_clusters = df.loc[X.index].copy()
-    df_clusters['Cluster'] = clusters
-
-    st.sidebar.markdown("---")
-    st.sidebar.write(f"**Total Clusters:** {n_clusters}")
-    st.sidebar.write(f"**Explained Variance (2 PCs):** {pca.explained_variance_ratio_.sum():.2%}")
-
-    # ============================================================
-    # CLUSTER SUMMARIES
-    # ============================================================
-    cluster_means = df_clusters.groupby("Cluster")[selected_features].mean()
-    overall_means = df_clusters[selected_features].mean()
-    cluster_diff = cluster_means - overall_means
-
-    # Top 5 factors per cluster
-    top_features = {}
-    for cluster_id in cluster_diff.index:
-        top = cluster_diff.loc[cluster_id].abs().sort_values(ascending=False).head(5)
-        top_features[cluster_id] = top.index.tolist()
-
-    # ============================================================
-    # DISPLAY SECTION
-    # ============================================================
-    st.header("🔍 Explore Cluster Profiles")
-
-    tab1, tab2 = st.tabs(["Cluster Summary", "Radar Chart"])
-
-    with tab1:
-        selected_cluster = st.selectbox("Select a cluster to view", cluster_means.index)
-        st.subheader(f"Cluster {selected_cluster} Summary")
-
-        st.write(f"**Top 5 defining factors:**")
-        top_df = pd.DataFrame({
-            "Feature": top_features[selected_cluster],
-            "Cluster Mean": cluster_means.loc[selected_cluster, top_features[selected_cluster]].values,
-            "Overall Mean": overall_means[top_features[selected_cluster]].values
-        })
-        top_df["Difference"] = top_df["Cluster Mean"] - top_df["Overall Mean"]
-        st.dataframe(top_df.style.format({"Cluster Mean": "{:.3f}", "Overall Mean": "{:.3f}", "Difference": "{:+.3f}"}))
-
-    with tab2:
-        st.subheader(f"Radar Chart: Cluster {selected_cluster} vs Dataset Average")
-
-        # Radar data
-        cluster_avg = cluster_means.loc[selected_cluster]
-        overall_avg = overall_means[cluster_avg.index]
-
-        fig = go.Figure()
-
-        fig.add_trace(go.Scatterpolar(
-            r=cluster_avg.values,
-            theta=cluster_avg.index,
-            fill='toself',
-            name=f'Cluster {selected_cluster}',
-            line=dict(color='royalblue')
-        ))
-
-        fig.add_trace(go.Scatterpolar(
-            r=overall_avg.values,
-            theta=overall_avg.index,
-            fill='toself',
-            name='Dataset Average',
-            line=dict(color='orange', dash='dash')
-        ))
-
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(visible=True, showline=True, linewidth=0.5)
-            ),
-            showlegend=True,
-            height=700,
-            title=f"Cluster {selected_cluster} vs Dataset Average"
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ============================================================
-    # DOWNLOAD SECTION
-    # ============================================================
-    st.markdown("---")
-    st.subheader("Export Clustered Dataset")
-
-    output_csv = df_clusters.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="Download Clustered Data (CSV)",
-        data=output_csv,
-        file_name="clustered_players.csv",
-        mime="text/csv"
-    )
-
-else:
-    st.info("👆 Upload a dataset to get started.")
+output_csv = df_clusters.to_csv(index=False).encode('utf-8')
+st.download_button(
+    label="Download Clustered Data (CSV)",
+    data=output_csv,
+    file_name="clustered_players_fixed.csv",
+    mime="text/csv"
