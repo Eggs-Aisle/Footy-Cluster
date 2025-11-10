@@ -158,3 +158,4 @@ st.download_button(
     data=output_csv,
     file_name="clustered_players_fixed.csv",
     mime="text/csv"
+)
